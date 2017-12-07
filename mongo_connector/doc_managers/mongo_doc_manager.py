@@ -27,7 +27,7 @@ import pymongo
 from bson import SON
 from gridfs import GridFS
 
-from mongo_connector import errors, constants
+from mongo_connector import errors, constants, metrics
 from mongo_connector.util import exception_wrapper
 from mongo_connector.doc_managers.doc_manager_base import DocManagerBase
 
@@ -215,6 +215,7 @@ class DocManager(DocManagerBase):
                 for i in range(self.chunk_size):
                     try:
                         doc = next(docs)
+                        metrics.transferred_rows.labels(metrics._lables[0], metrics._lables[1]).inc(1)
                         selector = {'_id': doc['_id']}
                         bulk.find(selector).upsert().replace_one(doc)
                         meta_selector = {self.id_field: doc['_id']}

@@ -29,10 +29,14 @@ import pymongo
 
 from pymongo import CursorType, errors as pymongo_errors
 
-from mongo_connector import errors, util
+from mongo_connector import errors, util, metrics
 from mongo_connector.constants import DEFAULT_BATCH_SIZE
 from mongo_connector.gridfs_file import GridFSFile
 from mongo_connector.util import log_fatal_exceptions, retry_until_ok
+
+from prometheus_client import start_http_server, Counter, Gauge
+start_http_server(8082)
+
 
 LOG = logging.getLogger(__name__)
 
@@ -69,6 +73,7 @@ class ReplicationLagLogger(threading.Thread):
                 LOG.info("OplogThread for replica set '%s' is up to date "
                          "with the oplog.",
                          self.opman.replset_name)
+        metrics.oplog_lag_in_seconds.labels(metrics._lables[0], metrics._lables[1]).set(lag_secs)
 
     def run(self):
         while self.opman.is_alive():
@@ -85,6 +90,13 @@ class OplogThread(threading.Thread):
                  oplog_progress_dict, namespace_config,
                  mongos_client=None, **kwargs):
         super(OplogThread, self).__init__()
+
+        self.source_database = namespace_config.get_included_databases()[0]
+        self.source_id = "%s:%s/%s" % (primary_client.address[0], primary_client.address[1], self.source_database)
+        self.target_id = "%s:%s/%s" % (doc_managers[0].mongo.address[0], doc_managers[0].mongo.address[1], self.source_database)
+        metrics._lables = [self.source_id, self.target_id]
+
+
 
         self.batch_size = kwargs.get('batch_size', DEFAULT_BATCH_SIZE)
 
@@ -731,8 +743,11 @@ class OplogThread(threading.Thread):
 
         Returns the cursor and True if the cursor is empty.
         """
-        timestamp = self.read_last_checkpoint()
+        total_rows = self.primary_client[self.source_database].command("dbstats")['objects']
+        metrics.total_rows.labels(metrics._lables[0], metrics._lables[1]).set(total_rows)
+        metrics.oplog_lag_in_seconds.labels(metrics._lables[0], metrics._lables[1]).set(-1)
 
+        timestamp = self.read_last_checkpoint()
         if timestamp is None:
             if self.collection_dump:
                 # dump collection and update checkpoint
